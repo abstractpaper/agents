@@ -13,10 +13,11 @@ Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'legal_actions'))
 
 class Agent:
-    def __init__(self, env, net, double=False, dev=None):
+    def __init__(self, env, net, name="", double=False, dev=None):
         global device
         device = dev
 
+        self.name = name
         self.double = double            # double q learning
         # self.episodes_count = 400000
         self.loss_cutoff = 0.1
@@ -42,7 +43,7 @@ class Agent:
         self.target_net.eval()
 
     def train(self):
-        writer = SummaryWriter(comment="-tictactoe")
+        writer = SummaryWriter(comment=f"-{self.name}" if self.name else "")
 
         # fill replay buffer with some random episodes
         self.load_replay_buffer(episodes_count=self.batch_size*2)
