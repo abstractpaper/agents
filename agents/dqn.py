@@ -13,24 +13,24 @@ Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'legal_actions'))
 
 class Agent:
-    def __init__(self, env, net, name="", double=False, dev=None):
+    def __init__(self, env, net, name="", double=False, learning_rate=3e-4, batch_size=128, loss_cutoff=0.1, epsilon_start=1, epsilon_end=0.1, epsilon_decay=1000, 
+    discount=0.99, target_net_update=1000, eval_episodes_count=1000, replay_buffer_length=1000000, dev=None):
         global device
         device = dev
 
         self.name = name
-        self.double = double            # double q learning
-        # self.episodes_count = 400000
-        self.loss_cutoff = 0.1
-        self.learning_rate = 3e-5       # alpha
-        self.batch_size = 128
-        self.epsilon_start = 1          # start with 100% exploration
-        self.epsilon_end = 0.1          # end with 10% exploration
-        self.epsilon_decay = 30000      # higher value = slower decay
-        self.discount = 1               # gamma
-        self.target_update = 1000       # number of steps to update target network
-        self.eval_episodes_count = 1000 # number of episodes for evaluation
-        self.replay_buffer = ReplayBuffer(1000000)
-        self.panic_buffer = PanicBuffer(10000)
+        self.double = double                # double q learning
+        self.loss_cutoff = loss_cutoff      # training stops at loss_cutoff
+        self.learning_rate = learning_rate  # alpha
+        self.batch_size = batch_size
+        self.epsilon_start = epsilon_start  # start with 100% exploration
+        self.epsilon_end = epsilon_end      # end with 10% exploration
+        self.epsilon_decay = epsilon_decay  # higher value = slower decay
+        self.discount = discount            # gamma
+        self.target_net_update = target_net_update     # number of steps to update target network
+        self.eval_episodes_count = eval_episodes_count # number of episodes for evaluation
+        self.replay_buffer = ReplayBuffer(replay_buffer_length)
+        self.panic_buffer = None
         self.panic_value = -1
         self.euphoria_value = 1
         self.env = env
@@ -73,7 +73,7 @@ class Agent:
                 break
 
             # update the target network, copying all weights and biases in policy_net to target_net
-            if steps % self.target_update == 0:
+            if steps % self.target_net_update == 0:
                 self.target_net.load_state_dict(self.policy_net.state_dict())                
                 avg_rewards, transitions = self.evaluate_policy(self.target_net)
 
