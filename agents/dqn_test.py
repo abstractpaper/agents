@@ -2,23 +2,19 @@ import pytest
 import numpy as np
 import torch
 import random
-from env.base import TicTacToeEnv
+from tests.fixtures.env import env
+from tests.fixtures.net import net
 from dqn import Agent, Transition
 
 @pytest.fixture
-def env():
-    class Env(TicTacToeEnv):
-        def player2_policy(self):
-            random_action = random.choice(self._board.empty_cells)
-            self._player2.mark(*random_action)
-    return Env()
+def agent(env, net):
+    return Agent(
+        env=env(obs_size=9, n_actions=3), 
+        net=net,
+        epsilon_decay=10)
 
 @pytest.fixture
-def agent(env):
-    return Agent(env)
-
-@pytest.fixture
-def transitions(env, agent):
+def transitions(agent):
     agent.load_replay_buffer(episodes_count=agent.batch_size*2)
     transitions = agent.replay_buffer.sample(agent.batch_size)
     return transitions
@@ -30,40 +26,38 @@ def test_eps(agent):
     x = agent.eps(start=1, end=0, decay=200, steps=2000)
     assert round(x, 3) == 0
 
-def test_dqn_select_action_random(env, agent):
-    obs = env.reset()
-    obs = np.reshape(obs, (9,))
+def test_dqn_select_action_random(agent):
+    obs = agent.env.reset()
     obs = torch.FloatTensor(obs)
     actions = []
-    for _ in range(10):
+    for step_n in range(1000):
         # should produce highly random actions
         x = agent.select_action(
             policy=agent.policy_net, 
             state=obs, 
             epsilon=True, 
-            steps=1,
-            legal_actions=env.legal_actions)
+            steps=step_n,
+            legal_actions=agent.env.legal_actions)
         actions.append(x)
-    # assert 40% of values are unique
-    assert len(np.unique(actions)) >= len(actions) * 0.4
+    # assert that randomness covered all action space
+    assert len(np.unique(actions)) == agent.env.action_space_n
 
-def test_dqn_select_action_greedy(env, agent):
-    obs = env.reset()
-    obs = np.reshape(obs, (9,))
+def test_dqn_select_action_greedy(agent):
+    obs = agent.env.reset()
     obs = torch.FloatTensor(obs)
     actions = []
-    for _ in range(5):
+    for _ in range(100):
         # should produce the same actions since we are passing the same observation
         x = agent.select_action(policy=agent.policy_net, state=obs, epsilon=False, steps=None)
         actions.append(x)
     assert len(np.unique(actions)) == 1
 
-def test_dqn_load_replay_buffer(env, agent):
+def test_dqn_load_replay_buffer(agent):
     assert len(agent.replay_buffer) == 0
     agent.load_replay_buffer()
     assert len(agent.replay_buffer) > 0
 
-def test_dqn_state_action_values(env, agent, transitions):
+def test_dqn_state_action_values(agent, transitions):
     batch = Transition(*zip(*transitions))
     state_action_values = agent.state_action_values(batch)
     assert len(state_action_values) == agent.batch_size
