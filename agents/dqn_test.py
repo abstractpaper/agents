@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import random
 from tests.fixtures.env import env
-from tests.fixtures.net import net
+from tests.fixtures.net.dqn import net
 from dqn import Agent, Transition
 
 @pytest.fixture
@@ -74,8 +74,6 @@ def test_expected_dqn_state_action_values(env, agent, transitions):
     batch = Transition(*zip(*transitions))
     expected_state_action_values = agent.expected_state_action_values(batch)
     assert len(expected_state_action_values) == agent.batch_size
-
-    print(expected_state_action_values)
 
 def test_expected_double_dqn_state_action_values(env, agent, transitions):
     agent.double = True
