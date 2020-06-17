@@ -22,14 +22,14 @@ from tensorboardX import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 class Agent:
-    def __init__(self, env, net, name="", dev=None):
+    def __init__(self, env, net, name="", learning_rate=3e-4, discount=0.99, eval_episodes_count=100, dev=None):
         global device
         device = dev
 
         self.name = name
-        self.learning_rate = 3e-4       # alpha
-        self.discount = 0.9             # gamma
-        self.eval_episodes_count = 100  # number of episodes for evaluation
+        self.learning_rate = learning_rate              # alpha
+        self.discount = discount                        # gamma
+        self.eval_episodes_count = eval_episodes_count  # number of episodes for evaluation
         self.env = env
         self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for evaluation
         self.net = net(self.env.observation_space_n, self.env.action_space_n).to(device)
@@ -90,8 +90,6 @@ class Agent:
 
     def select_action(self, state, legal_actions, saved_actions):
         action_dist, value = self.net(torch.Tensor(state).to(device), legal_actions)
-
-        print(action_dist)
 
         m = Categorical(action_dist)
         action = m.sample()
