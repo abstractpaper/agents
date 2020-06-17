@@ -14,7 +14,7 @@ Transition = namedtuple('Transition',
 
 class Agent:
     def __init__(self, env, net, name="", double=False, learning_rate=3e-4, batch_size=128, loss_cutoff=0.1, epsilon_start=1, epsilon_end=0.1, epsilon_decay=1000, 
-    discount=0.99, target_net_update=1000, eval_episodes_count=1000, replay_buffer_length=1000000, dev=None):
+    discount=0.99, target_net_update=1000, eval_episodes_count=1000, replay_buffer_length=1000000, logdir='', dev=None):
         global device
         device = dev
 
@@ -37,13 +37,14 @@ class Agent:
         self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for buffer loading and evaluation
         self.policy_net = net(self.env.observation_space_n, self.env.action_space_n).to(device) # what drives current actions; uses epsilon.
         self.target_net = net(self.env.observation_space_n, self.env.action_space_n).to(device) # copied from policy net periodically; greedy.
+        self.logdir = logdir
 
         # init target_net
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
     def train(self):
-        writer = SummaryWriter(comment=f"-{self.name}" if self.name else "")
+        writer = SummaryWriter(logdir=self.logdir, comment=f"-{self.name}" if self.name else "")
 
         # fill replay buffer with some random episodes
         self.load_replay_buffer(episodes_count=self.batch_size*2)

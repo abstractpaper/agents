@@ -22,7 +22,7 @@ from tensorboardX import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 class Agent:
-    def __init__(self, env, net, name="", learning_rate=3e-4, discount=0.99, eval_episodes_count=100, dev=None):
+    def __init__(self, env, net, name="", learning_rate=3e-4, discount=0.99, eval_episodes_count=100, logdir='logs/', dev=None):
         global device
         device = dev
 
@@ -33,9 +33,10 @@ class Agent:
         self.env = env
         self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for evaluation
         self.net = net(self.env.observation_space_n, self.env.action_space_n).to(device)
+        self.logdir = logdir
 
     def train(self):
-        writer = SummaryWriter(comment=f"-{self.name}" if self.name else "")
+        writer = SummaryWriter(logdir=self.logdir, comment=f"-{self.name}" if self.name else "")
         
         ep_idx = 1
         running_reward = 0

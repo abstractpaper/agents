@@ -4,7 +4,7 @@ import torch
 import random
 from tests.fixtures.env import env
 from tests.fixtures.net.a2c import net
-from a2c import Agent
+from agents.algorithms.a2c import Agent
 
 @pytest.fixture
 def agent(env, net):

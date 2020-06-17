@@ -4,7 +4,7 @@ import torch
 import random
 from tests.fixtures.env import env
 from tests.fixtures.net.dqn import net
-from dqn import Agent, Transition
+from agents.algorithms.dqn import Agent, Transition
 
 @pytest.fixture
 def agent(env, net):
