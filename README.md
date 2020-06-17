@@ -1,10 +1,12 @@
 > **NOTE**
 >
-> This library is experimental and done for my own understanding of Reinforcement Learning. You are better off using a well tested library like [OpenAI Baselines][3] unless you want to debug my code.
+> This library is experimental and done for my own understanding of Reinforcement Learning. Unless you feel like debugging my code, you are better off using well tested libraries such as:
+> - [rlpyt][3]
+> - [OpenAI Baselines][4] (based on tensorflow)
 
 # agents
 
-agents is a library of Reinforcment Learning agents.
+agents is a library of Reinforcment Learning agents implemented in pytorch.
 
 ## Algorithms
 
@@ -27,4 +29,5 @@ Both DQN and DDQN (Double DQN) are implemented.
 
 [1]: https://en.wikipedia.org/wiki/Q-learning#Deep_Q-learning
 [2]: https://hackernoon.com/intuitive-rl-intro-to-advantage-actor-critic-a2c-4ff545978752
-[3]: https://github.com/openai/baselines
+[3]: https://github.com/astooke/rlpyt
+[4]: https://github.com/openai/baselines
