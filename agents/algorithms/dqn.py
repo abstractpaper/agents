@@ -13,8 +13,24 @@ Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'legal_actions'))
 
 class Agent:
-    def __init__(self, env, net, name="", double=False, learning_rate=3e-4, batch_size=128, loss_cutoff=0.1, epsilon_start=1, epsilon_end=0.1, epsilon_decay=1000, 
-    discount=0.99, target_net_update=1000, eval_episodes_count=1000, replay_buffer_length=1000000, logdir='', dev=None):
+    def __init__(self, 
+                 env, 
+                 net, 
+                 name="", 
+                 double=False, 
+                 learning_rate=3e-4, 
+                 batch_size=128, 
+                 loss_cutoff=0.1, 
+                 epsilon_start=1, 
+                 epsilon_end=0.1, 
+                 epsilon_decay=1000, 
+                 discount=0.99, 
+                 target_net_update=1000, 
+                 eval_episodes_count=1000, 
+                 replay_buffer_length=1000000, 
+                 extra_metrics=None,
+                 logdir='', 
+                 dev=None):
         global device
         device = dev
 
@@ -30,9 +46,7 @@ class Agent:
         self.target_net_update = target_net_update     # number of steps to update target network
         self.eval_episodes_count = eval_episodes_count # number of episodes for evaluation
         self.replay_buffer = ReplayBuffer(replay_buffer_length)
-        self.panic_buffer = None
-        self.panic_value = -1
-        self.euphoria_value = 1
+        self.log_final_rewards = log_final_rewards
         self.env = env
         self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for buffer loading and evaluation
         self.policy_net = net(self.env.observation_space_n, self.env.action_space_n).to(device) # what drives current actions; uses epsilon.
@@ -78,24 +92,13 @@ class Agent:
                 self.target_net.load_state_dict(self.policy_net.state_dict())                
                 avg_rewards, transitions = self.evaluate_policy(self.target_net)
 
-                lost_episodes_count = len(list(filter(lambda t: t.reward < self.panic_value, transitions)))
-
                 writer.add_scalar("train/avg_rewards", avg_rewards, steps)
-                writer.add_scalar("train/lost_episodes_count", lost_episodes_count, steps)
-                writer.add_scalar("env/panic_buffer", len(self.panic_buffer), steps)
-
-                if type(self.panic_buffer) == PanicBuffer:
-                    # drain panic buffer and optimize
-                    n = 0
-                    while len(self.panic_buffer) > self.batch_size:
-                        loss = self.optimize(self.panic_buffer)
-                        writer.add_scalar("train/panic_loss", loss, steps+n)
-                        n = n+1
 
             steps = steps + 1
 
         # save model
-        torch.save(self.target_net.state_dict(), "policies/dqn")
+        policy_name = self.name if self.name else "dqn"
+        torch.save(self.target_net.state_dict(), f"policies/{policy_name}")
         writer.close()
 
     @staticmethod
@@ -213,17 +216,9 @@ class Agent:
                 else:
                     state = next_state
 
-        if type(self.panic_buffer) == PanicBuffer:
-            # fill panic buffer
-            panic_generator = filter(lambda t: t.reward < self.panic_value, transitions)
-            for t in panic_generator:
-                self.panic_buffer.push(*t)
-            panic_generator = filter(lambda t: t.reward > self.euphoria_value, transitions)
-            for t in panic_generator:
-                self.panic_buffer.push(*t)
-
         avg_rewards = sum(rewards)/self.eval_episodes_count if self.eval_episodes_count > 0 else 0
-        return avg_rewards, transitions
+        
+        return avg_rewards, transitions, metrics
 
     def state_action_values(self, batch):
         """ 
@@ -295,9 +290,9 @@ class ReplayBuffer:
 
 class PanicBuffer(ReplayBuffer):
     """ 
-    PanicBuffer is ReplayBuffer that removes sampled items from memory.
-    One use case is to store surprising results that have a large loss,
-    sample them and optimize during evaluation.
+    PanicBuffer is ReplayBuffer with the following distinctions:
+    - sample() removes transitions from memory.
+    - fill() fills the buffer with transitions having surprising (far off) rewards.
     """
     def sample(self, batch_size):
         """ get a sample and remove items from memory """
@@ -306,3 +301,10 @@ class PanicBuffer(ReplayBuffer):
         sample = [self.memory.pop(random.randrange(len(self.memory))) for _ in range(batch_size)]
         self.position = len(self.memory)
         return sample
+
+    def fill(self, transitions, panic_value, euphoria_value):
+        """ fill buffer with transitions that has reward < panic_value
+        and reward > euphoria_value """
+        panic_generator = filter(lambda t: t.reward < panic_value or t.reward > euphoria_value, transitions)
+        for t in panic_generator:
+            self.push(*t)
