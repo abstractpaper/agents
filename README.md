@@ -1,8 +1,11 @@
 > **NOTE**
 >
-> This library is experimental and done for my own understanding of Reinforcement Learning. Unless you feel like debugging my code, you are better off using well tested libraries such as:
-> - [rlpyt][3]
-> - [OpenAI Baselines][4] (based on tensorflow)
+> This library is experimental and done to reinforce my own understanding of Reinforcement Learning. Unless you feel like debugging my code, you are better off using well tested libraries such as:
+> - Pytorch based:
+>   - [rlpyt][3]
+> - Tensorflow based:
+>   - [OpenAI Baselines][4]
+>   - [Intel coach][5]
 
 # agents
 
@@ -31,3 +34,4 @@ Both DQN and DDQN (Double DQN) are implemented.
 [2]: https://hackernoon.com/intuitive-rl-intro-to-advantage-actor-critic-a2c-4ff545978752
 [3]: https://github.com/astooke/rlpyt
 [4]: https://github.com/openai/baselines
+[5]: https://github.com/NervanaSystems/coach
