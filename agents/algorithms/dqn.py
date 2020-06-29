@@ -5,29 +5,34 @@ import numpy as np
 import random
 import math
 import copy
+import time
 from collections import namedtuple
-from itertools import count
+from itertools import count, compress
 from tensorboardX import SummaryWriter
+from agents.buffers.priority_replay_buffer import PrioritizedReplayBuffer
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward', 'legal_actions'))
+                        ('state', 'action', 'next_state', 'reward', 'mask'))
 
 class Agent:
     def __init__(self, 
                  env, 
                  net, 
                  name="", 
-                 double=False, 
+                 double=True, 
                  learning_rate=3e-4, 
-                 batch_size=128, 
-                 loss_cutoff=0.1, 
+                 batch_size=128,
+                 optimizer=optim.Adam,
+                 loss_cutoff=0.1,
                  epsilon_start=1, 
                  epsilon_end=0.1, 
                  epsilon_decay=1000, 
                  discount=0.99, 
-                 target_net_update=1000, 
+                 target_net_update=5000,
                  eval_episodes_count=1000, 
-                 replay_buffer_length=1000000, 
+                 eval_every=1000,
+                 replay_buffer=PrioritizedReplayBuffer,
+                 replay_buffer_capacity=1000000, 
                  extra_metrics=None,
                  logdir='', 
                  dev=None):
@@ -39,14 +44,15 @@ class Agent:
         self.loss_cutoff = loss_cutoff      # training stops at loss_cutoff
         self.learning_rate = learning_rate  # alpha
         self.batch_size = batch_size
+        self.optimizer = optimizer
         self.epsilon_start = epsilon_start  # start with 100% exploration
         self.epsilon_end = epsilon_end      # end with 10% exploration
         self.epsilon_decay = epsilon_decay  # higher value = slower decay
         self.discount = discount            # gamma
         self.target_net_update = target_net_update     # number of steps to update target network
-        self.eval_episodes_count = eval_episodes_count # number of episodes for evaluation
-        self.replay_buffer = ReplayBuffer(replay_buffer_length)
-        self.log_final_rewards = log_final_rewards
+        self.eval_episodes_count = eval_episodes_count # number of episodes to evaluate
+        self.eval_every = eval_every # number of steps to run evaluations at
+        self.replay_buffer = replay_buffer(replay_buffer_capacity)
         self.env = env
         self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for buffer loading and evaluation
         self.policy_net = net(self.env.observation_space_n, self.env.action_space_n).to(device) # what drives current actions; uses epsilon.
@@ -59,21 +65,23 @@ class Agent:
 
     def train(self):
         writer = SummaryWriter(logdir=self.logdir, comment=f"-{self.name}" if self.name else "")
-
-        # fill replay buffer with some random episodes
-        self.load_replay_buffer(episodes_count=self.batch_size*2)
-
         steps = 1
         recent_loss = []
-        lost_episodes_count = 0
+        avg_rewards = 0
         while True:
             # fill replay buffer with one episode from the current policy (epsilon is used)
             self.load_replay_buffer(policy=self.policy_net, steps=steps)
 
+            # sample transitions
+            transitions, idxs, is_weights = self.replay_buffer.sample(self.batch_size)
+            if len(transitions) < self.batch_size:
+                continue
+
             # optimize policy_net
-            loss = self.optimize(self.replay_buffer)
+            loss = self.optimize(transitions, idxs, is_weights)
+            # keep track of recent losses and truncate list to latest `eval_every` losses
             recent_loss.append(loss)
-            recent_loss = recent_loss[-100:]
+            recent_loss = recent_loss[-self.eval_every:]
 
             # tensorboard metrics
             epsilon = Agent.eps(self.epsilon_start, self.epsilon_end, self.epsilon_decay, steps)
@@ -81,30 +89,96 @@ class Agent:
             writer.add_scalar("env/replay_buffer", len(self.replay_buffer), steps)
             writer.add_scalar("train/loss", loss, steps)
 
-            # stop if average loss < loss_cutoff
-            # and last evaluation has no lost episodes
-            loss_achieved = sum(recent_loss)/len(recent_loss) < self.loss_cutoff
-            if loss_achieved and lost_episodes_count == 0:
-                break
-
             # update the target network, copying all weights and biases in policy_net to target_net
             if steps % self.target_net_update == 0:
-                self.target_net.load_state_dict(self.policy_net.state_dict())                
-                avg_rewards, transitions = self.evaluate_policy(self.target_net)
+                self.target_net.load_state_dict(self.policy_net.state_dict())
 
+            # run evaluation
+            if steps % self.eval_every == 0:
+                avg_rewards, transitions = self.evaluate_policy(self.policy_net)
                 writer.add_scalar("train/avg_rewards", avg_rewards, steps)
+
+                loss_achieved = sum(recent_loss)/len(recent_loss) <= self.loss_cutoff
+                avg_rewards_achieved = avg_rewards >= self.env.spec.reward_threshold
+                if loss_achieved and avg_rewards_achieved:
+                    break
 
             steps = steps + 1
 
         # save model
         policy_name = self.name if self.name else "dqn"
-        torch.save(self.target_net.state_dict(), f"policies/{policy_name}")
+        torch.save(self.policy_net.state_dict(), f"policies/{policy_name}")
         writer.close()
 
     @staticmethod
     def eps(start, end, decay, steps): 
         # compute epsilon threshold
         return end + (start - end) * math.exp(-1. * steps / decay)
+
+    @staticmethod
+    def legal_actions_to_mask(legal_actions, action_space_n):
+        mask = [0]*action_space_n
+        for n in legal_actions:
+            mask[n] = 1
+        return mask
+
+    def load_replay_buffer(self, policy=None, episodes_count=1, steps=0):
+        """ load replay buffer with episodes_count """
+        env = self.env_clone
+        for eps_idx in range(episodes_count):
+            state = env.reset()
+            while True:
+                legal_actions = env.legal_actions
+                action = self.select_action(
+                    policy=policy, 
+                    state=state, 
+                    epsilon=True,
+                    steps=steps,
+                    legal_actions=legal_actions).item()
+
+                # perform action
+                next_state, reward, done, _ = env.step(action)
+
+                # insert into replay buffer
+                mask = Agent.legal_actions_to_mask(legal_actions, env.action_space_n)
+                transition = Transition(state, action, next_state if not done else None, reward, mask)
+                # set error of new transitions to a very high number so they get sampled
+                self.replay_buffer.push(self.replay_buffer.tree.total, transition)
+
+                if done:
+                    break
+                else:
+                    # transition
+                    state = next_state
+
+    def evaluate_policy(self, policy):
+        env = self.env_clone
+        random.seed(time.time())
+        rewards = []
+        transitions = []
+        for _ in range(self.eval_episodes_count):
+            state = env.reset()
+            while True:
+                legal_actions = env.legal_actions
+                action = self.select_action(
+                    policy=policy, 
+                    state=state, 
+                    epsilon=False,
+                    legal_actions=legal_actions).item()
+                next_state, reward, done, _ = env.step(action)
+                rewards.append(reward)
+
+                mask = Agent.legal_actions_to_mask(legal_actions, env.action_space_n)
+                transitions.append(Transition(state, action, next_state if not done else None, reward, mask))
+
+                if done:
+                    break
+                else:
+                    state = next_state
+
+        avg_rewards = sum(rewards)/self.eval_episodes_count if self.eval_episodes_count > 0 else 0
+        
+        return avg_rewards, transitions
 
     def select_action(self, policy, state, epsilon=False, steps=None, legal_actions=[]):
         """ 
@@ -127,29 +201,34 @@ class Agent:
         # greedy action
         with torch.no_grad():
             # index of highest value item returned from policy -> action
-            return policy(state, legal_actions).argmax().view(1, 1)
+            state = torch.Tensor(state).to(device)
+            mask = torch.zeros(self.env.action_space_n).index_fill(0, torch.LongTensor(legal_actions),  1)
+            return policy(state, mask).argmax().view(1, 1)
 
-    def optimize(self, buffer):
-        if len(buffer) < self.batch_size:
-            return
-
-        # sample from replay buffer
-        transitions = buffer.sample(self.batch_size)
+    def optimize(self, transitions, idxs, is_weights):
         # n transitions -> 1 transition with each attribute containing all the
         # data point values along its axis.
         # e.g. batch.action = list of all actions from each row
         batch = Transition(*zip(*transitions))
 
-        # compute state action values (what policy_net deems as the best action)
+        # Compute state action values; the value of each action in batch according
+        # to policy_net (feeding it a state and emitting an probability distribution).
+        # These are the values that our current network think are right and we want to correct.
         state_action_values = self.state_action_values(batch)
         # compute expected state action values (reward + value of next state according to target_net)
+
         expected_state_action_values = self.expected_state_action_values(batch)
 
         # calculate difference between actual and expected action values
-        loss = F.smooth_l1_loss(state_action_values, expected_state_action_values)
+        batch_loss = F.smooth_l1_loss(state_action_values, expected_state_action_values, reduction='none')
+        loss = (sum(batch_loss * torch.FloatTensor(is_weights).unsqueeze(1))/self.batch_size).squeeze()
 
-        # adam optimizer
-        optimizer = optim.Adam(params=self.policy_net.parameters(), lr=self.learning_rate)
+        # update priority
+        for i in range(self.batch_size):
+            self.replay_buffer.update(idxs[i], batch_loss[i].item())
+
+        # optimizer
+        optimizer = self.optimizer(params=self.policy_net.parameters(), lr=self.learning_rate)
         optimizer.zero_grad()
         # calculate gradients
         loss.backward()
@@ -161,79 +240,20 @@ class Agent:
 
         return loss
 
-    def load_replay_buffer(self, policy=None, episodes_count=1, steps=0):
-        """ load replay buffer with episodes_count """
-        env = self.env_clone
-        for eps_idx in range(episodes_count):
-            state = env.reset()
-            while True:
-                legal_actions = env.legal_actions
-                if not policy:
-                    action = random.choice([i for i in range(self.env.action_space_n+1) if i in legal_actions])
-                else:
-                    action = self.select_action(
-                        policy=policy, 
-                        state=torch.Tensor(state).to(device), 
-                        epsilon=True,
-                        steps=steps,
-                        legal_actions=legal_actions).item()
-
-                # perform action
-                next_state, reward, done, _ = env.step(action)
-                reward = torch.tensor([reward], device=device)
-
-                # insert into replay buffer
-                action = torch.tensor([[action]], device=device, dtype=torch.long)
-                self.replay_buffer.push(state, action, next_state if not done else None, reward, legal_actions)
-
-                if done:
-                    break
-                else:
-                    # transition
-                    state = next_state
-
-    def evaluate_policy(self, policy):
-        env = self.env_clone
-        rewards = []
-        transitions = []
-        for _ in range(self.eval_episodes_count):
-            state = env.reset()
-            while True:
-                legal_actions = env.legal_actions
-                action = self.select_action(
-                    policy=policy, 
-                    state=torch.Tensor(state).to(device), 
-                    epsilon=False,
-                    legal_actions=legal_actions).item()
-                next_state, reward, done, _ = env.step(action)
-                rewards.append(reward)
-
-                action = torch.tensor([[action]], device=device, dtype=torch.long)
-                transitions.append(Transition(state, action, next_state if not done else None, reward, legal_actions))
-
-                if done:
-                    break
-                else:
-                    state = next_state
-
-        avg_rewards = sum(rewards)/self.eval_episodes_count if self.eval_episodes_count > 0 else 0
-        
-        return avg_rewards, transitions, metrics
-
     def state_action_values(self, batch):
         """ 
         Compute Q(s_t, a) - the model computes Q(s_t), then we select the
         columns of actions taken. These are the actions which would've been taken
         for each batch state according to policy_net.
         """
-        # all states in batch
+        # list -> tensor
         state_batch = torch.Tensor(batch.state).to(device)
+        mask_batch = torch.Tensor(batch.mask).to(device)
+        action_batch = torch.Tensor(batch.action).to(device)
         # get action values for each state in batch
-        state_action_values = self.policy_net(state_batch, batch.legal_actions)
-        # all actions in batch
-        action_batch = torch.cat(batch.action)
+        state_action_values = self.policy_net(state_batch, mask_batch)
         # select action from state_action_values according to action_batch value
-        return state_action_values.gather(1, action_batch)
+        return state_action_values.gather(1, action_batch.unsqueeze(1).long())
 
     def expected_state_action_values(self, batch):
         """
@@ -243,68 +263,29 @@ class Agent:
         This is merged based on the mask, such that we'll have either the expected
         state value or 0 in case the state was final.
         """
-        # a list indicating whether each state is a non-final state.
+        # a bool list indicating if next_state is final (s is not None)
         non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), device=device, dtype=torch.bool)
         non_final_next_states = torch.Tensor([s for s in batch.next_state if s is not None]).to(device)
-        reward_batch = torch.Tensor([[r] for r in batch.reward]).to(device)
-
-        next_legal_actions = [i for (i, v) in zip(list(batch.legal_actions), non_final_mask.tolist()) if v]
-        next_state_values = torch.zeros(self.batch_size, device=device)
+        # get legal actions for non final states; (i, v) -> (list of legal actions, non_final_state)
+        next_mask = torch.Tensor([i for (i, v) in zip(list(batch.mask), non_final_mask.tolist()) if v]).to(device)
+        # initialize next_state_values to zeros
+        next_state_values = torch.zeros(self.batch_size).to(device)
 
         if len(non_final_next_states) > 0:
             if self.double:
-                # double q learning: get actions from policy_net and get their values according to target_net
-                # Q(st+1, a)
-                next_state_actions = self.policy_net(non_final_next_states, next_legal_actions).max(1)[1].unsqueeze(-1)
-                # max Q`(st+1, max Q(st+1, a) )
-                next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_legal_actions).gather(1, next_state_actions).squeeze(-1)
+                # double q learning: get actions from policy_net and get their values according to target_net; decoupling
+                #                    action selection from evaluation reduces the bias imposed by max in single dqn.
+                # next_state_actions: action selection according to policy_net; Q(st+1, a)
+                next_state_actions = self.policy_net(non_final_next_states, next_mask).max(1)[1].unsqueeze(-1)
+                # next_state_values: action evaluation according to target_net; max Q`(st+1, max Q(st+1, a) )
+                next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_mask).gather(1, next_state_actions).squeeze(-1)
             else:
                 # max Q`(st+1, a)
-                next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_legal_actions).max(1)[0].detach()
+                next_state_values[non_final_mask] = self.target_net(non_final_next_states, next_mask).max(1)[0].detach()
 
         # Compute the expected Q values
         # reward + max Q`(st+1, a) * discount
+        reward_batch = torch.Tensor([[r] for r in batch.reward]).to(device)
         state_action_values = reward_batch + (next_state_values.unsqueeze(1) * self.discount)
 
         return state_action_values
-        
-
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
-
-    def push(self, *args):
-        """Saves a transition."""
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)
-        self.memory[self.position] = Transition(*args)
-        self.position = int((self.position + 1) % self.capacity)
-
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
-
-class PanicBuffer(ReplayBuffer):
-    """ 
-    PanicBuffer is ReplayBuffer with the following distinctions:
-    - sample() removes transitions from memory.
-    - fill() fills the buffer with transitions having surprising (far off) rewards.
-    """
-    def sample(self, batch_size):
-        """ get a sample and remove items from memory """
-        if len(self.memory) < batch_size:
-            return None
-        sample = [self.memory.pop(random.randrange(len(self.memory))) for _ in range(batch_size)]
-        self.position = len(self.memory)
-        return sample
-
-    def fill(self, transitions, panic_value, euphoria_value):
-        """ fill buffer with transitions that has reward < panic_value
-        and reward > euphoria_value """
-        panic_generator = filter(lambda t: t.reward < panic_value or t.reward > euphoria_value, transitions)
-        for t in panic_generator:
-            self.push(*t)
