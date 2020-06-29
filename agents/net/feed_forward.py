@@ -1,4 +1,5 @@
 import abc
+import torch
 import torch.nn as nn 
 import math
 
@@ -13,28 +14,26 @@ class FeedForward(nn.Module):
         Return a feed forward network model.
         """
 
-    def forward(self, x, legal_actions=[]):
+    def forward(self, x, mask=None):
         # forward pass
         actions = self.net(x)
-        # mask actions if a mask is provided
-        if len(legal_actions) > 0:
-            actions = self.mask_actions(actions, legal_actions)
+        # mask actions
+        if mask is not None:
+            actions = self.mask_actions(actions, mask)
         return actions
 
     def mask_actions(self, actions, mask):
-        if actions.dim() == 2:
-            # batch
-            if len(actions) != len(mask):
-                raise Exception("actions and mask batches have different sizes.")
+        # turn single actions into a batch with a single action
+        if actions.dim() == 1:
+            actions = actions.unsqueeze(0)
+        if mask.dim() == 1:
+            mask = mask.unsqueeze(0)
 
-            for idx, step in enumerate(actions):
-                illegal_actions = [i for i, _ in enumerate(step) if i not in mask[idx]]
-                for jdx in illegal_actions:
-                    actions[idx][jdx] = -math.inf
-        else:
-            # single step
-            illegal_actions = [i for i, _ in enumerate(actions) if i not in mask]
-            for idx in illegal_actions:
-                actions[idx] = -math.inf
+        if len(actions) != len(mask):
+            raise Exception("actions and mask batches have different sizes.")
+
+        for idx, _ in enumerate(actions):
+            for jdx in [i for i, flag in enumerate(mask[idx]) if flag==0]:
+                actions[idx][jdx] = -math.inf
 
         return actions
