@@ -22,16 +22,25 @@ from tensorboardX import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 class Agent:
-    def __init__(self, env, net, name="", learning_rate=3e-4, discount=0.99, eval_episodes_count=100, logdir='logs/', dev=None):
+    def __init__(self, 
+                env, 
+                net, 
+                name="", 
+                learning_rate=3e-4, 
+                optimizer=optim.Adam,
+                discount=0.99, 
+                eval_episodes_count=100, 
+                logdir='', 
+                dev=None):
         global device
         device = dev
 
         self.name = name
         self.learning_rate = learning_rate              # alpha
+        self.optimizer = optimizer
         self.discount = discount                        # gamma
         self.eval_episodes_count = eval_episodes_count  # number of episodes for evaluation
         self.env = env
-        self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for evaluation
         self.net = net(self.env.observation_space_n, self.env.action_space_n).to(device)
         self.logdir = logdir
 
@@ -43,66 +52,73 @@ class Agent:
 
         # infinite episodes until threshold is met off
         while True:
-            state = self.env.reset()
-            ep_reward = 0
-            step_rewards = []
-            saved_actions = []
-            entropy = 0
-
-            # a single episode is finite
-            while True:
-                legal_actions = self.env.legal_actions
-
-                # choose an action
-                action, action_dist = self.select_action(state, legal_actions, saved_actions)
-                # take a step in env
-                next_state, reward, done, _ = self.env.step(action)
-                
-                # calculate entropy
-                entropy += -torch.sum(torch.mean(action_dist) * torch.log(action_dist))
-                # rewards
-                step_rewards.append(reward)
-                ep_reward += reward
-
-                if done:
-                    break
+            ep_reward, step_rewards, saved_actions, entropy = self.run_episode()
 
             running_reward = 0.05 * ep_reward + (1 - 0.05) * running_reward
 
+            # returns
+            returns = self.calculate_returns(step_rewards)
+            returns = self.standardize_returns(returns)
+
             # optimize policy_net
-            loss = self.optimize(step_rewards, saved_actions, entropy)
+            loss = self.optimize(returns, saved_actions, entropy)
 
             # tensorboard metrics
             writer.add_scalar("train/loss", loss, ep_idx)
             writer.add_scalar("train/running_reward", running_reward, ep_idx)
 
-            ep_idx = ep_idx + 1
-            # # stop if average loss < loss_cutoff
-            # if sum(recent_loss)/len(recent_loss) < self.loss_cutoff:
-            #     break
+            # evaluate policy
+            if ep_idx % 500 == 0:
+                stop, avg_rewards = self.evaluate_policy(running_reward)
 
-            if ep_idx % 1000 == 0:
-                eval_avg_rewards = self.evaluate_policy()
-                writer.add_scalar("train/eval_avg_rewards", eval_avg_rewards, ep_idx)
+                writer.add_scalar("train/avg_rewards", avg_rewards, ep_idx)
+
+                if stop:
+                    break
+            
+            ep_idx = ep_idx + 1
 
         # save model
-        torch.save(self.target_net.state_dict(), "policies/a2c")
+        policy_name = self.name if self.name else "a2c"
+        torch.save(self.net.state_dict(), f"policies/{policy_name}")
         writer.close()
 
+    def run_episode(self):
+        state = self.env.reset()
+        step_rewards = []
+        saved_actions = []
+        entropy = 0
+
+        # run a single episode
+        while True:
+            # choose an action
+            action, action_dist, dist_entropy = self.select_action(state, self.env.legal_actions, saved_actions)
+            # take a step in env
+            next_state, reward, done, _ = self.env.step(action)
+            
+            # calculate entropy
+            entropy += dist_entropy
+
+            # accumulate rewards
+            step_rewards.append(reward)
+
+            state = next_state
+
+            if done:
+                return sum(step_rewards), step_rewards, saved_actions, entropy
+
     def select_action(self, state, legal_actions, saved_actions):
-        action_dist, value = self.net(torch.Tensor(state).to(device), legal_actions)
+        mask = torch.zeros(self.env.action_space_n).index_fill(0, torch.LongTensor(legal_actions),  1)
+        action_dist, value = self.net(torch.Tensor(state).to(device), mask)
 
         m = Categorical(action_dist)
         action = m.sample()
 
-        saved_actions.append(SavedAction(m.log_prob(action), value))
+        saved_actions.append(SavedAction(m.log_prob(action), value.squeeze(0)))
 
-        return action.item(), action_dist
+        return action.item(), action_dist, m.entropy()
 
-    def optimize(self, step_rewards, saved_actions, entropy):
-        """
-        Calculates actor and critic loss and performs backprop.
-        """
+    def calculate_returns(self, step_rewards):
         R = 0
         returns = [] # list to save the true values
 
@@ -112,30 +128,36 @@ class Agent:
             R = r + R * self.discount
             returns.insert(0, R)
 
-        # smallest number such that 1.0 + eps != 1.0
+        return returns
+
+    def standardize_returns(self, returns):
+        # smallest positive number such that 1.0 + eps != 1.0
         eps = np.finfo(np.float32).eps.item()
         returns = torch.tensor(returns)
-        # normalize returns; use one scale for values
-        returns = (returns - returns.mean()) / (returns.std() + eps)
+        # calculate z-scores; standardize the distribution
+        return (returns - returns.mean()) / (returns.std() + eps)
 
+    def optimize(self, returns, saved_actions, entropy):
+        """
+        Calculates actor and critic loss and performs backprop.
+        """
         policy_losses = [] # list to save actor (policy) loss
         value_losses = [] # list to save critic (value) loss
         for (log_prob, value), R in zip(saved_actions, returns):
             advantage = R - value.item()
 
             # calculate actor (policy) loss.
-            # we are scaling the actor's action probability by advantage;
-            # advantage can be positive or negative.
+            # scale probabilities by advantage
             policy_losses.append(-log_prob * advantage)
 
             # calculate critic (value) loss using L1 smooth loss
             value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
 
         # sum up all the values of policy_losses and value_losses
-        loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum() # + 0.001 * entropy
+        loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum() + 0.001 * entropy
 
         # reset gradients
-        optimizer = optim.Adam(params=self.net.parameters(), lr=self.learning_rate)
+        optimizer = self.optimizer(params=self.net.parameters(), lr=self.learning_rate)
         optimizer.zero_grad()
         # perform backprop; compute gradient
         loss.backward()
@@ -147,25 +169,28 @@ class Agent:
 
         return loss
 
-    def evaluate_policy(self):
-        env = self.env_clone
+    def evaluate_policy(self, running_reward):
         rewards = []
-        ep_rewards = []
         for _ in range(self.eval_episodes_count):
-            state = env.reset()
+            state = self.env.reset()
             ep_reward = 0
             while True:
-                legal_actions = env.legal_actions
-                action_dist, value = self.net(torch.Tensor(state).to(device), legal_actions)
+                mask = torch.zeros(self.env.action_space_n).index_fill(0, torch.LongTensor(self.env.legal_actions),  1)
+                action_dist, value = self.net(torch.Tensor(state).to(device), mask)
                 action = torch.argmax(action_dist).item()
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, done, _ = self.env.step(action)
                 rewards.append(reward)
-                ep_reward += reward
+
+                state = next_state
 
                 if done:
                     break
-                else:
-                    state = next_state
-            ep_rewards.append(ep_reward)
 
-        return sum(rewards)/self.eval_episodes_count if self.eval_episodes_count > 0 else 0
+        avg_rewards = sum(rewards)/self.eval_episodes_count if self.eval_episodes_count > 0 else 0
+
+        # stop training if thresholds are met
+        running_reward_achieved = running_reward >= self.env.spec.reward_threshold
+        avg_rewards_achieved = avg_rewards >= self.env.spec.reward_threshold
+        
+        return running_reward_achieved and avg_rewards_achieved, avg_rewards
+            

@@ -25,16 +25,15 @@ class Net(FeedForward):
         self.critic_head = nn.Linear(self.hidden_layer, 1)
         return common
 
-    def forward(self, x, legal_actions):
+    def forward(self, x, mask=None):
         # shared layers among actor and critic
         common = self.net(x)
 
         # actor layer
-        if len(legal_actions) > 0:
-            actions = self.mask_actions(self.actor_head(common), legal_actions)
-        else:
-            actions = self.actor_head(common)
-        action_dist = F.softmax(actions, dim=-1)
+        actions = self.actor_head(common)
+        if mask is not None:
+            actions = self.mask_actions(actions, mask)
+        action_dist = F.softmax(actions, dim=-1).squeeze()
 
         # critic layer
         value = self.critic_head(common)
