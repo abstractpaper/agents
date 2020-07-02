@@ -7,6 +7,8 @@
 >   - [OpenAI Baselines][4]
 >   - [Intel coach][5]
 
+[![<abstractpaper>](https://circleci.com/gh/abstractpaper/agents.svg?style=shield)](https://circleci.com/gh/abstractpaper/agents)
+
 # agents
 
 agents is a library of Reinforcment Learning agents implemented in pytorch.
