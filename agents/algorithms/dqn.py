@@ -24,6 +24,7 @@ class Agent:
                  batch_size=128,
                  optimizer=optim.Adam,
                  loss_cutoff=0.1,
+                 max_std_dev=-1,
                  epsilon_start=1, 
                  epsilon_end=0.1, 
                  epsilon_decay=1000, 
@@ -34,7 +35,7 @@ class Agent:
                  replay_buffer=PrioritizedReplayBuffer,
                  replay_buffer_capacity=1000000, 
                  extra_metrics=None,
-                 logdir='', 
+                 logdir=None, 
                  dev=None):
         global device
         device = dev
@@ -42,6 +43,7 @@ class Agent:
         self.name = name
         self.double = double                # double q learning
         self.loss_cutoff = loss_cutoff      # training stops at loss_cutoff
+        self.max_std_dev = max_std_dev      # max std deviation allowed to stop training; >= 0 to activate
         self.learning_rate = learning_rate  # alpha
         self.batch_size = batch_size
         self.optimizer = optimizer
@@ -54,7 +56,6 @@ class Agent:
         self.eval_every = eval_every # number of steps to run evaluations at
         self.replay_buffer = replay_buffer(replay_buffer_capacity)
         self.env = env
-        self.env_clone = copy.deepcopy(env) # separate environment so we don't mess with `env` state; used for buffer loading and evaluation
         self.policy_net = net(self.env.observation_space_n, self.env.action_space_n).to(device) # what drives current actions; uses epsilon.
         self.target_net = net(self.env.observation_space_n, self.env.action_space_n).to(device) # copied from policy net periodically; greedy.
         self.logdir = logdir
@@ -67,6 +68,7 @@ class Agent:
         writer = SummaryWriter(logdir=self.logdir, comment=f"-{self.name}" if self.name else "")
         steps = 1
         recent_loss = []
+        recent_eval = []
         avg_rewards = 0
         while True:
             # fill replay buffer with one episode from the current policy (epsilon is used)
@@ -95,12 +97,19 @@ class Agent:
 
             # run evaluation
             if steps % self.eval_every == 0:
-                avg_rewards, transitions = self.evaluate_policy(self.policy_net)
+                avg_rewards, stddev = self.evaluate_policy(self.policy_net)
+
                 writer.add_scalar("train/avg_rewards", avg_rewards, steps)
+                writer.add_scalar("train/ep_rewards_std", stddev, steps)
+
+                recent_eval.append(avg_rewards)
+                recent_eval = recent_eval[-10:]
 
                 loss_achieved = sum(recent_loss)/len(recent_loss) <= self.loss_cutoff
-                avg_rewards_achieved = avg_rewards >= self.env.spec.reward_threshold
-                if loss_achieved and avg_rewards_achieved:
+                avg_rewards_achieved = sum(recent_eval)/len(recent_eval) >= self.env.spec.reward_threshold
+                std_dev_achieved = (self.max_std_dev < 0) or (self.max_std_dev >= 0 and stddev <= self.max_std_dev)
+
+                if loss_achieved and avg_rewards_achieved and std_dev_achieved:
                     break
 
             steps = steps + 1
@@ -124,11 +133,10 @@ class Agent:
 
     def load_replay_buffer(self, policy=None, episodes_count=1, steps=0):
         """ load replay buffer with episodes_count """
-        env = self.env_clone
         for eps_idx in range(episodes_count):
-            state = env.reset()
+            state = self.env.reset()
             while True:
-                legal_actions = env.legal_actions
+                legal_actions = self.env.legal_actions
                 action = self.select_action(
                     policy=policy, 
                     state=state, 
@@ -137,10 +145,10 @@ class Agent:
                     legal_actions=legal_actions).item()
 
                 # perform action
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, done, _ = self.env.step(action)
 
                 # insert into replay buffer
-                mask = Agent.legal_actions_to_mask(legal_actions, env.action_space_n)
+                mask = Agent.legal_actions_to_mask(legal_actions, self.env.action_space_n)
                 transition = Transition(state, action, next_state if not done else None, reward, mask)
                 # set error of new transitions to a very high number so they get sampled
                 self.replay_buffer.push(self.replay_buffer.tree.total, transition)
@@ -152,33 +160,28 @@ class Agent:
                     state = next_state
 
     def evaluate_policy(self, policy):
-        env = self.env_clone
-        random.seed(time.time())
-        rewards = []
-        transitions = []
+        ep_rewards = []
         for _ in range(self.eval_episodes_count):
-            state = env.reset()
+            self.env.seed(time.time())
+            state = self.env.reset()
+            ep_reward = 0
             while True:
-                legal_actions = env.legal_actions
+                legal_actions = self.env.legal_actions
                 action = self.select_action(
                     policy=policy, 
                     state=state, 
                     epsilon=False,
                     legal_actions=legal_actions).item()
-                next_state, reward, done, _ = env.step(action)
-                rewards.append(reward)
-
-                mask = Agent.legal_actions_to_mask(legal_actions, env.action_space_n)
-                transitions.append(Transition(state, action, next_state if not done else None, reward, mask))
+                next_state, reward, done, _ = self.env.step(action)
+                ep_reward += reward
 
                 if done:
+                    ep_rewards.append(ep_reward)
                     break
                 else:
                     state = next_state
-
-        avg_rewards = sum(rewards)/self.eval_episodes_count if self.eval_episodes_count > 0 else 0
         
-        return avg_rewards, transitions
+        return np.mean(ep_rewards), np.std(ep_rewards)
 
     def select_action(self, policy, state, epsilon=False, steps=None, legal_actions=[]):
         """ 
