@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="rlprop",
-    version="0.0.3",
+    version="0.0.4",
     author="Aziz Alfoudari",
     author_email="aziz.alfoudari@gmail.com",
     description="Reinforcement Learning agents implemented in pytorch",
@@ -13,6 +13,12 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/abstractpaper/prop",
     packages=setuptools.find_packages(),
+    install_requires=[
+        'numpy',
+        'gym',
+        'torch',
+        'tensorboardX',
+    ],
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
