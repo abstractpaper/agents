@@ -5,7 +5,7 @@ import random
 import gym
 from gym.envs.registration import register, registry
 from tests.fixtures.net.a2c import net
-from agents.algorithms.a2c import Agent
+from prop.algorithms.a2c import Agent
 
 @pytest.fixture
 def agent(net):

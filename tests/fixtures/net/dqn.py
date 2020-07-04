@@ -1,6 +1,6 @@
 import pytest
 import torch.nn as nn 
-from agents.net.feed_forward import FeedForward
+from prop.net.feed_forward import FeedForward
 
 @pytest.fixture
 def net():

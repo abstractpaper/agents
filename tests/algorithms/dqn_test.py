@@ -4,8 +4,8 @@ import torch
 import random
 from tests.fixtures.env import env
 from tests.fixtures.net.dqn import net
-from agents.algorithms.dqn import Agent, Transition
-from agents.buffers.priority_replay_buffer import PrioritizedReplayBuffer
+from prop.algorithms.dqn import Agent, Transition
+from prop.buffers.priority_replay_buffer import PrioritizedReplayBuffer
 
 @pytest.fixture
 def agent(env, net):

@@ -9,7 +9,7 @@ import time
 from collections import namedtuple
 from itertools import count, compress
 from tensorboardX import SummaryWriter
-from agents.buffers.priority_replay_buffer import PrioritizedReplayBuffer
+from prop.buffers.priority_replay_buffer import PrioritizedReplayBuffer
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'mask'))

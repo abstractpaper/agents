@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import random
 from collections import namedtuple
-from agents.buffers.priority_replay_buffer import PrioritizedReplayBuffer
+from prop.buffers.priority_replay_buffer import PrioritizedReplayBuffer
 
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward', 'mask'))

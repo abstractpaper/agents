@@ -1,17 +1,8 @@
-> **NOTE**
->
-> This library is experimental and done to reinforce my own understanding of Reinforcement Learning. Unless you feel like debugging my code, you are better off using well tested libraries such as:
-> - Pytorch based:
->   - [rlpyt][3]
-> - Tensorflow based:
->   - [OpenAI Baselines][4]
->   - [Intel coach][5]
+[![<abstractpaper>](https://circleci.com/gh/abstractpaper/prop.svg?style=shield)](https://circleci.com/gh/abstractpaper/prop)
 
-[![<abstractpaper>](https://circleci.com/gh/abstractpaper/agents.svg?style=shield)](https://circleci.com/gh/abstractpaper/agents)
+# prop
 
-# agents
-
-agents is a library of Reinforcment Learning agents implemented in pytorch.
+prop is a library of Reinforcment Learning agents implemented in pytorch.
 
 ## Algorithms
 
